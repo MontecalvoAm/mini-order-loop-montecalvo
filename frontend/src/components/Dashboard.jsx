@@ -8,10 +8,19 @@ const Dashboard = () => {
   const [orders, setOrders] = useState([]);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  
+  // Bulk Selection State
+  const [selectedOrders, setSelectedOrders] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [bulkResult, setBulkResult] = useState('');
 
   const fetchOrders = () => {
     api.get('/orders', { params: { search, status } })
-      .then(res => setOrders(res.data.data))
+      .then(res => {
+        setOrders(res.data.data);
+        // Clear selection if list changes
+        setSelectedOrders([]);
+      })
       .catch(console.error);
   };
 
@@ -21,6 +30,69 @@ const Dashboard = () => {
     }, 300);
     return () => clearTimeout(delayDebounce);
   }, [search, status]);
+
+  const toggleSelectAll = () => {
+    if (selectedOrders.length === orders.length) {
+      setSelectedOrders([]);
+    } else {
+      setSelectedOrders(orders.map(o => o.id));
+    }
+  };
+
+  const toggleSelectOrder = (id) => {
+    if (selectedOrders.includes(id)) {
+      setSelectedOrders(selectedOrders.filter(oId => oId !== id));
+    } else {
+      setSelectedOrders([...selectedOrders, id]);
+    }
+  };
+
+  // Determine which bulk actions are valid based on selected orders
+  const getValidBulkActions = () => {
+    if (selectedOrders.length === 0) return [];
+    
+    const selected = orders.filter(o => selectedOrders.includes(o.id));
+    const allStatuses = [...new Set(selected.map(o => o.status))];
+    
+    // To perform a bulk action, all selected orders must be in the exact same state
+    if (allStatuses.length > 1) return [];
+    
+    const currentStatus = allStatuses[0];
+    const actions = [];
+
+    if (user?.role === 'requester') {
+      if (currentStatus === 'draft') actions.push({ label: 'Submit', action: 'submit', color: 'blue' });
+      if (['draft', 'submitted'].includes(currentStatus)) actions.push({ label: 'Cancel', action: 'cancel', color: 'gray' });
+    }
+    
+    if (user?.role === 'approver') {
+      if (currentStatus === 'submitted') {
+        actions.push({ label: 'Approve', action: 'approve', color: 'emerald' });
+        // Rejecting bulk without reason might be tricky, so let's only allow approve/fulfill/close for bulk
+      }
+      if (currentStatus === 'approved') actions.push({ label: 'Fulfill', action: 'fulfill', color: 'indigo' });
+      if (currentStatus === 'fulfilled') actions.push({ label: 'Close', action: 'close', color: 'purple' });
+    }
+
+    return actions;
+  };
+
+  const handleBulkAction = async (action) => {
+    if (!window.confirm(`Are you sure you want to ${action} ${selectedOrders.length} orders?`)) return;
+    
+    setIsProcessing(true);
+    setBulkResult('');
+    
+    const promises = selectedOrders.map(id => api.post(`/orders/${id}/${action}`));
+    const results = await Promise.allSettled(promises);
+    
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    const failCount = results.filter(r => r.status === 'rejected').length;
+    
+    setBulkResult(`Successfully updated ${successCount} orders. ${failCount > 0 ? `Failed on ${failCount} orders.` : ''}`);
+    setIsProcessing(false);
+    fetchOrders();
+  };
 
   const exportCSV = () => {
     const csvRows = [];
@@ -49,9 +121,11 @@ const Dashboard = () => {
     document.body.removeChild(a);
   };
 
+  const validActions = getValidBulkActions();
+
   return (
-    <div className="min-h-screen bg-gray-900 p-6 font-sans">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-gray-900 p-6 font-sans relative">
+      <div className="max-w-7xl mx-auto pb-24">
         <header className="flex justify-between items-center bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-700 mb-8 transition-transform hover:scale-[1.01] duration-300">
           <div>
             <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">Order Management</h1>
@@ -65,6 +139,12 @@ const Dashboard = () => {
           </button>
         </header>
         
+        {bulkResult && (
+          <div className="bg-emerald-500/10 border border-emerald-500/50 text-emerald-400 p-4 rounded-xl mb-6 shadow-lg">
+            {bulkResult}
+          </div>
+        )}
+
         <div className="bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-700 mb-6 flex flex-col md:flex-row gap-4 justify-between items-end md:items-center">
           <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto flex-1">
             <input 
@@ -105,6 +185,14 @@ const Dashboard = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-900/50 text-gray-400 text-sm uppercase tracking-wider">
+                <th className="p-4 w-12 text-center">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
+                    checked={orders.length > 0 && selectedOrders.length === orders.length}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th className="p-4 font-semibold">Order ID</th>
                 <th className="p-4 font-semibold">Customer ID</th>
                 <th className="p-4 font-semibold">Total</th>
@@ -115,7 +203,15 @@ const Dashboard = () => {
             </thead>
             <tbody className="divide-y divide-gray-700 text-gray-300">
               {orders.map(order => (
-                <tr key={order.id} className="hover:bg-gray-700/30 transition-colors">
+                <tr key={order.id} className={`transition-colors ${selectedOrders.includes(order.id) ? 'bg-blue-900/20' : 'hover:bg-gray-700/30'}`}>
+                  <td className="p-4 text-center">
+                    <input 
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
+                      checked={selectedOrders.includes(order.id)}
+                      onChange={() => toggleSelectOrder(order.id)}
+                    />
+                  </td>
                   <td className="p-4 font-medium text-white">#{order.id}</td>
                   <td className="p-4">{order.user_id}</td>
                   <td className="p-4 text-emerald-400 font-medium">${Number(order.total_price).toFixed(2)}</td>
@@ -142,13 +238,55 @@ const Dashboard = () => {
               ))}
               {orders.length === 0 && (
                 <tr>
-                  <td colSpan="6" className="p-8 text-center text-gray-500">No orders found.</td>
+                  <td colSpan="7" className="p-8 text-center text-gray-500">No orders found.</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Floating Bulk Action Bar */}
+      {selectedOrders.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-800/90 backdrop-blur-xl border-t border-gray-700 shadow-[0_-10px_40px_rgba(0,0,0,0.3)] p-4 px-6 z-50 transform transition-transform animate-slide-up">
+          <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <div className="text-white font-medium">
+              <span className="text-blue-400 font-bold">{selectedOrders.length}</span> orders selected
+            </div>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setSelectedOrders([])}
+                className="px-4 py-2 rounded-lg text-gray-400 hover:text-white transition-colors"
+                disabled={isProcessing}
+              >
+                Clear
+              </button>
+              
+              {validActions.length === 0 && (
+                <span className="text-gray-500 text-sm py-2">No bulk actions available for mixed statuses.</span>
+              )}
+              
+              {validActions.map(action => (
+                <button
+                  key={action.action}
+                  onClick={() => handleBulkAction(action.action)}
+                  disabled={isProcessing}
+                  className={`px-6 py-2 rounded-lg font-bold text-white transition-all shadow-lg ${
+                    action.color === 'emerald' ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/30' :
+                    action.color === 'indigo' ? 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/30' :
+                    action.color === 'blue' ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/30' :
+                    action.color === 'purple' ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-500/30' :
+                    'bg-gray-600 hover:bg-gray-500 shadow-gray-500/30'
+                  } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {isProcessing ? 'Processing...' : `Bulk ${action.label}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

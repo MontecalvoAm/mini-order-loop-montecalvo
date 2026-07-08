@@ -51,11 +51,6 @@ const Login = () => {
           </button>
         </form>
         
-        <div className="mt-6 text-sm text-gray-400 text-center">
-          <p>Test Accounts:</p>
-          <p>Requester: requester@demo.test / password</p>
-          <p>Approver: approver@demo.test / password</p>
-        </div>
       </div>
     </div>
   );
